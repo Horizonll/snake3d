@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>3D Snake</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0e1a; }
+body { display: flex; align-items: center; justify-content: center; font-family: 'Consolas', 'Courier New', monospace; }
+canvas { display: block; touch-action: none; }
+#hud { position: fixed; top: 0; left: 0; width: 100%; pointer-events: none; z-index: 10; }
+.hud-tl { position: absolute; top: 16px; left: 20px; color: #e0f7fa; }
+.hud-tr { position: absolute; top: 16px; right: 20px; color: #546e7a; text-align: right; font-size: 12px; }
+.score { font-size: 24px; font-weight: bold; }
+.sub { font-size: 14px; color: #80deea; margin-top: 2px; }
+.mode-wrap { color: #76ff03; }
+.mode-solid { color: #4fc3f7; }
+#overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 20; pointer-events: none; }
+.big { font-size: 56px; font-weight: bold; text-shadow: 0 0 20px currentColor; }
+.sub-big { font-size: 20px; color: #e0f7fa; margin-top: 16px; }
+.hint-big { font-size: 16px; color: #80deea; margin-top: 24px; pointer-events: auto; }
+#controls { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; z-index: 10; }
+.ctrl-btn { width: 56px; height: 56px; border: 2px solid #1a3a5a; border-radius: 12px; background: rgba(26,58,90,0.5); color: #4fc3f7; font-size: 20px; font-weight: bold; cursor: pointer; display: flex; align-items: center; justify-content: center; user-select: none; -webkit-user-select: none; touch-action: none; }
+.ctrl-btn:active { background: rgba(0,229,255,0.3); border-color: #00e5ff; }
+.ctrl-wide { width: 120px; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="hud">
+  <div class="hud-tl">
+    <div class="score" id="scoreEl">SCORE 0</div>
+    <div class="sub" id="bestEl">BEST 0</div>
+    <div class="sub" id="lenEl">LEN 3</div>
+    <div class="sub" id="modeEl">MODE WRAP</div>
+  </div>
+  <div class="hud-tr" id="hintEl">
+    WASD move | Space/Shift up/down<br>Arrows rotate cam | R reset | P pause | T wall | Enter restart
+  </div>
+</div>
+<div id="overlay" style="display:none">
+  <div class="big" id="overlayTitle"></div>
+  <div class="sub-big" id="overlaySub"></div>
+  <div class="hint-big" id="overlayHint"></div>
+</div>
+<div id="controls">
+  <button class="ctrl-btn" data-dir="left">←</button>
+  <button class="ctrl-btn" data-dir="up">↑</button>
+  <button class="ctrl-btn" data-dir="down">↓</button>
+  <button class="ctrl-btn" data-dir="right">→</button>
+  <button class="ctrl-btn ctrl-wide" data-dir="toggle">WALL</button>
+</div>
+
+<script>
+"use strict";
+
+// ============================================================
+// 3D 数学工具
+// ============================================================
+const V = {
+  add: (a,b) => [a[0]+b[0], a[1]+b[1], a[2]+b[2]],
+  sub: (a,b) => [a[0]-b[0], a[1]-b[1], a[2]-b[2]],
+  scale: (a,s) => [a[0]*s, a[1]*s, a[2]*s],
+  dot: (a,b) => a[0]*b[0]+a[1]*b[1]+a[2]*b[2],
+  cross: (a,b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]],
+  len: (a) => Math.sqrt(a[0]*a[0]+a[1]*a[1]+a[2]*a[2]),
+  norm: (a) => { const l=Math.sqrt(a[0]*a[0]+a[1]*a[1]+a[2]*a[2]) || 1; return [a[0]/l, a[1]/l, a[2]/l]; },
+  lerp: (a,b,t) => [a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t],
+};
+
+// ============================================================
+// 颜色工具
+// ============================================================
+function hexToRgb(h) {
+  h = h.replace('#','');
+  return [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)];
+}
+function rgbToHex(r,g,b) {
+  const c = v => Math.max(0,Math.min(255,Math.round(v))).toString(16).padStart(2,'0');
+  return '#' + c(r) + c(g) + c(b);
+}
+function shadeColor(hex, b) {
+  const [r,g,bl] = hexToRgb(hex);
+  return rgbToHex(r*b, g*b, bl*b);
+}
+function lerpColor(c1, c2, t) {
+  const [r1,g1,b1] = hexToRgb(c1), [r2,g2,b2] = hexToRgb(c2);
+  return rgbToHex(r1+(r2-r1)*t, g1+(g2-g1)*t, b1+(b2-b1)*t);
+}
+
+// ============================================================
+// 常量
+// ============================================================
+const GRID = 10, CELL = 1.0, HALF = CELL/2;
+const ORIGIN_OFFSET = -(GRID*CELL)/2;
+const FOV = 800, CLIP_NEAR = 0.5;
+const DIRS = { PX:[1,0,0], NX:[-1,0,0], PY:[0,1,0], NY:[0,-1,0], PZ:[0,0,1], NZ:[0,0,-1] };
+const OPP = { PX:'NX', NX:'PX', PY:'NY', NY:'PY', PZ:'NZ', NZ:'PZ' };
+const WALL_WRAP = 'wrap', WALL_SOLID = 'solid';
+const SNAKE_HEAD = '#00e5ff', SNAKE_TAIL = '#1a237e';
+const FOOD_COLOR = '#ff1744', GRID_COLOR = '#1a3a5a';
+const BORDER_COLOR = '#4fc3f7', WRAP_BORDER = '#76ff03';
+const BG_COLOR = '#0a0e1a', ACCENT = '#76ff03';
+
+// ============================================================
+// 游戏逻辑
+// ============================================================
+class GameState {
+  constructor() { this.best = 0; this.reset(); }
+  reset() {
+    const mid = GRID >> 1;
+    this.snake = [];
+    for (let i = 0; i < 3; i++) this.snake.push([mid-i, mid, 0]);
+    this.direction = 'PX';
+    this.pendingDir = 'PX';
+    this.score = 0;
+    this.alive = true;
+    this.paused = false;
+    this.won = false;
+    this.tickAccum = 0;
+    this.moveInterval = 0.28;
+    this.growPending = 0;
+    this.wallMode = this.wallMode || WALL_WRAP;
+    this._spawnFood();
+  }
+  get head() { return this.snake[0]; }
+  _spawnFood() {
+    const occupied = new Set(this.snake.map(c => c.join(',')));
+    const free = [];
+    for (let x=0;x<GRID;x++) for (let y=0;y<GRID;y++) for (let z=0;z<GRID;z++)
+      if (!occupied.has(x+','+y+','+z)) free.push([x,y,z]);
+    if (free.length === 0) { this.won = true; this.alive = false; return; }
+    this.food = free[Math.floor(Math.random()*free.length)];
+  }
+  setDirection(dir) {
+    if (!this.alive) return;
+    if (dir === OPP[this.direction]) return;
+    this.pendingDir = dir;
+  }
+  step() {
+    if (!this.alive || this.paused || this.won) return false;
+    this.direction = this.pendingDir;
+    const [dx,dy,dz] = DIRS[this.direction];
+    const [hx,hy,hz] = this.head;
+    let nx = hx+dx, ny = hy+dy, nz = hz+dz;
+    if (this.wallMode === WALL_WRAP) {
+      nx = ((nx % GRID) + GRID) % GRID;
+      ny = ((ny % GRID) + GRID) % GRID;
+      nz = ((nz % GRID) + GRID) % GRID;
+    } else {
+      if (nx<0||nx>=GRID||ny<0||ny>=GRID||nz<0||nz>=GRID) { this.alive=false; return false; }
+    }
+    const checkBody = this.growPending > 0 ? this.snake : this.snake.slice(0,-1);
+    for (const s of checkBody) if (s[0]===nx&&s[1]===ny&&s[2]===nz) { this.alive=false; return false; }
+    this.snake.unshift([nx,ny,nz]);
+    let ate = false;
+    if (nx===this.food[0] && ny===this.food[1] && nz===this.food[2]) {
+      this.score++;
+      if (this.score > this.best) this.best = this.score;
+      this.growPending++;
+      this.moveInterval = Math.max(0.10, 0.28 - this.score*0.012);
+      this._spawnFood();
+      ate = true;
+    }
+    if (this.growPending > 0) this.growPending--;
+    else this.snake.pop();
+    return ate;
+  }
+  update(dt, onEat) {
+    if (!this.alive || this.paused || this.won) return;
+    this.tickAccum += dt;
+    while (this.tickAccum >= this.moveInterval) {
+      this.tickAccum -= this.moveInterval;
+      if (this.step() && onEat) onEat();
+    }
+  }
+}
+
+// ============================================================
+// 相机
+// ============================================================
+class Camera {
+  constructor() {
+    this.yaw = -0.6; this.pitch = 0.35; this.distance = 28; this.height = 4;
+    this.autoRotate = true; this.autoSpeed = 0.15;
+    this.beginFrame();
+  }
+  basis() {
+    const cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
+    const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw);
+    const pos = [this.distance*sy*cp, this.distance*sp+this.height, this.distance*cy*cp];
+    const fwd = V.norm([-pos[0],-pos[1],-pos[2]]);
+    const wup = [0,1,0];
+    const right = V.norm(V.cross(fwd, wup));
+    const up = V.cross(right, fwd);
+    return {right, up, fwd, pos};
+  }
+  beginFrame() { this._b = this.basis(); }
+  worldToCam(p) {
+    const {right,up,fwd,pos} = this._b;
+    const r = V.sub(p, pos);
+    return [V.dot(r,right), V.dot(r,up), V.dot(r,fwd)];
+  }
+  dirToCam(d) {
+    const {right,up,fwd} = this._b;
+    return [V.dot(d,right), V.dot(d,up), V.dot(d,fwd)];
+  }
+  project(pc, cx, cy) {
+    let z = pc[2]; if (z < CLIP_NEAR) z = CLIP_NEAR;
+    const s = FOV / z;
+    return [pc[0]*s+cx, -pc[1]*s+cy, z];
+  }
+  update(dt) { if (this.autoRotate) this.yaw += this.autoSpeed * dt; }
+}
+
+// ============================================================
+// 渲染辅助
+// ============================================================
+function gridToWorld(gx,gy,gz) {
+  return [gx*CELL+ORIGIN_OFFSET+HALF, gy*CELL+ORIGIN_OFFSET+HALF, gz*CELL+ORIGIN_OFFSET+HALF];
+}
+function makeCubeFaces(center, size) {
+  const s = size/2, [cx,cy,cz] = center;
+  const v = [
+    [cx-s,cy-s,cz-s],[cx+s,cy-s,cz-s],[cx+s,cy+s,cz-s],[cx-s,cy+s,cz-s],
+    [cx-s,cy-s,cz+s],[cx+s,cy-s,cz+s],[cx+s,cy+s,cz+s],[cx-s,cy+s,cz+s],
+  ];
+  const faces = [
+    [[0,1,2,3],[0,0,-1]], [[5,4,7,6],[0,0,1]],
+    [[4,0,3,7],[-1,0,0]], [[1,5,6,2],[1,0,0]],
+    [[3,2,6,7],[0,1,0]], [[4,5,1,0],[0,-1,0]],
+  ];
+  return {v, faces};
+}
+
+// ============================================================
+// 粒子系统
+// ============================================================
+class ParticleSystem {
+  constructor() { this.particles = []; }
+  burst(center, color = FOOD_COLOR, count = 20) {
+    for (let i = 0; i < count; i++) {
+      const theta = Math.random()*Math.PI*2, phi = Math.random()*Math.PI;
+      const speed = 1.5 + Math.random()*2.5;
+      const vel = [
+        Math.sin(phi)*Math.cos(theta)*speed,
+        Math.sin(phi)*Math.sin(theta)*speed,
+        Math.cos(phi)*speed,
+      ];
+      const life = 0.4 + Math.random()*0.5;
+      this.particles.push({pos:[...center], vel, life, maxLife:life, color});
+    }
+  }
+  update(dt) {
+    this.particles = this.particles.filter(p => {
+      p.life -= dt;
+      if (p.life <= 0) return false;
+      p.pos = V.add(p.pos, V.scale(p.vel, dt));
+      p.vel = V.scale(p.vel, 1 - 2*dt);
+      p.vel[1] -= 4 * dt;
+      return true;
+    });
+  }
+}
+
+// ============================================================
+// 主游戏
+// ============================================================
+class Snake3DGame {
+  constructor() {
+    this.canvas = document.getElementById('game');
+    this.ctx = this.canvas.getContext('2d');
+    this.state = new GameState();
+    this.camera = new Camera();
+    this.particles = new ParticleSystem();
+    this.shake = 0; this.flash = 0; this.time = 0;
+    this.prevSnake = this.state.snake.map(s => [...s]);
+    this.moveProgress = 1;
+    this.keysHeld = new Set();
+    this.resize();
+    window.addEventListener('resize', () => this.resize());
+    this.bindInput();
+    this.lastTime = performance.now();
+    this.running = true;
+    this.loop();
+  }
+  resize() {
+    this.W = window.innerWidth; this.H = window.innerHeight;
+    this.canvas.width = this.W; this.canvas.height = this.H;
+  }
+  // ---- 输入 ----
+  bindInput() {
+    document.addEventListener('keydown', e => this.onKey(e, true));
+    document.addEventListener('keyup', e => this.onKey(e, false));
+    document.querySelectorAll('.ctrl-btn').forEach(btn => {
+      const dir = btn.dataset.dir;
+      const start = (e) => { e.preventDefault(); this.onCtrlBtn(dir, true); };
+      const end = (e) => { e.preventDefault(); this.onCtrlBtn(dir, false); };
+      btn.addEventListener('touchstart', start, {passive:false});
+      btn.addEventListener('touchend', end);
+      btn.addEventListener('mousedown', start);
+      btn.addEventListener('mouseup', end);
+      btn.addEventListener('mouseleave', end);
+    });
+  }
+  onKey(e, down) {
+    const k = e.key.toLowerCase();
+    if (down) this.keysHeld.add(k); else this.keysHeld.delete(k);
+    if (!down) return;
+    switch(k) {
+      case 'arrowleft': this.camera.yaw -= 0.12; this.camera.autoRotate = false; break;
+      case 'arrowright': this.camera.yaw += 0.12; this.camera.autoRotate = false; break;
+      case 'arrowup': this.camera.pitch = Math.max(-0.3, this.camera.pitch - 0.10); break;
+      case 'arrowdown': this.camera.pitch = Math.min(1.0, this.camera.pitch + 0.10); break;
+      case 'r': { const m=this.camera.autoRotate; this.camera = new Camera(); this.camera.autoRotate = m; break; }
+      case 'p': this.state.paused = !this.state.paused; break;
+      case 't': this.state.wallMode = this.state.wallMode === WALL_WRAP ? WALL_SOLID : WALL_WRAP; break;
+      case 'enter':
+        if (!this.state.alive) {
+          const wm = this.state.wallMode;
+          this.state.reset(); this.state.wallMode = wm;
+          this.prevSnake = this.state.snake.map(s=>[...s]);
+          this.moveProgress = 1; this.particles = new ParticleSystem();
+          this.shake = 0; this.flash = 0; this.time = 0;
+        }
+        break;
+      case 'w': case 'a': case 's': case 'd': case ' ': case 'shift':
+        this.handleMoveKey(k); break;
+    }
+  }
+  onCtrlBtn(dir, down) {
+    if (!down) return;
+    if (dir === 'toggle') { this.state.wallMode = this.state.wallMode === WALL_WRAP ? WALL_SOLID : WALL_WRAP; return; }
+    // 方向按钮相对于摄像机
+    const {right, fwd} = this.camera.basis();
+    const fxz = [fwd[0], fwd[2]], rxz = [right[0], right[2]];
+    const snap = (v) => Math.abs(v[0])>Math.abs(v[1]) ? (v[0]>0?'PX':'NX') : (v[1]>0?'PZ':'NZ');
+    const fAxis = snap(fxz), rAxis = snap(rxz);
+    const map = { up:fAxis, down:OPP[fAxis], left:OPP[rAxis], right:rAxis };
+    if (map[dir]) this.state.setDirection(map[dir]);
+  }
+  handleMoveKey(k) {
+    if (!this.state.alive) return;
+    const {right, fwd} = this.camera.basis();
+    const fxz = [fwd[0], fwd[2]], rxz = [right[0], right[2]];
+    const snap = (v) => Math.abs(v[0])>Math.abs(v[1]) ? (v[0]>0?'PX':'NX') : (v[1]>0?'PZ':'NZ');
+    const fAxis = snap(fxz), rAxis = snap(rxz);
+    const map = { w:fAxis, s:OPP[fAxis], d:rAxis, a:OPP[rAxis], ' ':'PY', shift:'NY' };
+    if (map[k]) this.state.setDirection(map[k]);
+  }
+  updateMoveKeys() {
+    for (const k of this.keysHeld) {
+      if (['w','a','s','d',' ','shift'].includes(k)) this.handleMoveKey(k);
+    }
+  }
+  // ---- 循环 ----
+  loop() {
+    if (!this.running) return;
+    const now = performance.now();
+    let dt = (now - this.lastTime) / 1000;
+    this.lastTime = now;
+    dt = Math.min(dt, 0.05);
+    this.update(dt);
+    this.render();
+    requestAnimationFrame(() => this.loop());
+  }
+  update(dt) {
+    this.time += dt;
+    this.camera.update(dt);
+    this.camera.beginFrame();
+    this.updateMoveKeys();
+    const preSnake = this.state.snake.map(s => [...s]);
+    const onEat = () => {
+      this.particles.burst(gridToWorld(...this.state.head));
+      this.flash = 0.3;
+    };
+    this.state.update(dt, onEat);
+    if (this.state.alive && !this.state.paused) {
+      this.moveProgress = Math.min(1, this.moveProgress + dt / this.state.moveInterval);
+    }
+    if (this.state.snake.length > 0 && (preSnake.length === 0 || this.state.snake[0][0]!==preSnake[0][0] || this.state.snake[0][1]!==preSnake[0][1] || this.state.snake[0][2]!==preSnake[0][2])) {
+      this.prevSnake = preSnake;
+      this.moveProgress = 0;
+    }
+    this.particles.update(dt);
+    if (this.shake > 0) this.shake = Math.max(0, this.shake - dt*4);
+    if (this.flash > 0) this.flash = Math.max(0, this.flash - dt*3);
+    if (!this.state.alive && this.shake === 0 && !this.state.won) this.shake = 1;
+  }
+  // ---- 渲染 ----
+  render() {
+    const ctx = this.ctx;
+    ctx.fillStyle = BG_COLOR;
+    ctx.fillRect(0, 0, this.W, this.H);
+    let sx = 0, sy = 0;
+    if (this.shake > 0) { sx = (Math.random()*2-1)*this.shake*8; sy = (Math.random()*2-1)*this.shake*8; }
+    const cx = this.W/2 + sx, cy = this.H/2 + sy;
+    const cam = this.camera;
+    const faces = [];
+    this.renderGridBox(faces, cam);
+    this.renderSnake(faces, cam);
+    if (this.state.alive && !this.state.won) this.renderFood(faces, cam);
+    this.renderParticles(faces, cam);
+    faces.sort((a,b) => b.depth - a.depth);
+    for (const f of faces) {
+      if (f.type === 'poly') {
+        ctx.beginPath();
+        const pts = f.camPts.map(p => cam.project(p, cx, cy));
+        ctx.moveTo(pts[0][0], pts[0][1]);
+        for (let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0], pts[i][1]);
+        ctx.closePath();
+        ctx.fillStyle = f.fill; ctx.strokeStyle = f.outline;
+        ctx.lineWidth = f.width || 1;
+        ctx.fill(); ctx.stroke();
+      } else if (f.type === 'line') {
+        const p1 = cam.project(f.p1, cx, cy), p2 = cam.project(f.p2, cx, cy);
+        ctx.beginPath(); ctx.moveTo(p1[0],p1[1]); ctx.lineTo(p2[0],p2[1]);
+        ctx.strokeStyle = f.fill; ctx.lineWidth = f.width || 1; ctx.stroke();
+      }
+    }
+    this.renderUI();
+  }
+  renderGridBox(faces, cam) {
+    const s = GRID*CELL/2;
+    const corners = [[-s,-s,-s],[s,-s,-s],[s,s,-s],[-s,s,-s],[-s,-s,s],[s,-s,s],[s,s,s],[-s,s,s]];
+    const cc = corners.map(c => cam.worldToCam(c));
+    const edges = [[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]];
+    const bc = this.state.wallMode === WALL_WRAP ? WRAP_BORDER : BORDER_COLOR;
+    for (const [i,j] of edges) {
+      const p1 = cc[i], p2 = cc[j];
+      faces.push({type:'line', p1, p2, depth:(p1[2]+p2[2])/2, fill:bc, width:2});
+    }
+    for (let i=0;i<=GRID;i++) {
+      const t = ORIGIN_OFFSET + i*CELL;
+      let p1 = cam.worldToCam([ORIGIN_OFFSET,-s,t]), p2 = cam.worldToCam([s,-s,t]);
+      faces.push({type:'line', p1, p2, depth:(p1[2]+p2[2])/2, fill:GRID_COLOR, width:1});
+      p1 = cam.worldToCam([t,-s,ORIGIN_OFFSET]); p2 = cam.worldToCam([t,-s,s]);
+      faces.push({type:'line', p1, p2, depth:(p1[2]+p2[2])/2, fill:GRID_COLOR, width:1});
+    }
+  }
+  getSnakePositions() {
+    const positions = [];
+    const snake = this.state.snake, prev = this.prevSnake;
+    const t = this.state.alive ? this.moveProgress : 1;
+    for (let i=0;i<snake.length;i++) {
+      const seg = snake[i];
+      let pPrev;
+      if (prev && i < prev.length) pPrev = gridToWorld(...prev[i]);
+      else if (prev && i === prev.length) pPrev = gridToWorld(...prev[0]);
+      else pPrev = gridToWorld(...seg);
+      const pCurr = gridToWorld(...seg);
+      const dist = Math.hypot(pPrev[0]-pCurr[0], pPrev[1]-pCurr[1], pPrev[2]-pCurr[2]);
+      let pos = dist > CELL*1.5 ? pCurr : V.lerp(pPrev, pCurr, t);
+      positions.push(pos);
+    }
+    return positions;
+  }
+  renderSnake(faces, cam) {
+    const positions = this.getSnakePositions();
+    const n = positions.length;
+    for (let i=0;i<n;i++) {
+      const pos = positions[i];
+      const tRatio = i / Math.max(1, n-1);
+      const color = lerpColor(SNAKE_HEAD, SNAKE_TAIL, tRatio);
+      const size = i===0 ? CELL*0.95 : CELL*0.88;
+      const {v, faces: cubeFaces} = makeCubeFaces(pos, size);
+      const camVerts = v.map(p => cam.worldToCam(p));
+      for (const [indices, normal] of cubeFaces) {
+        const camPts = indices.map(idx => camVerts[idx]);
+        const depth = camPts.reduce((s,p) => s+p[2], 0) / camPts.length;
+        const nCam = cam.dirToCam(normal);
+        if (nCam[2] < 0) {
+          const light = V.norm([0.3,0.8,-0.5]);
+          const b = Math.max(0.35, Math.abs(V.dot(nCam,light))*0.8+0.4);
+          faces.push({
+            type:'poly', camPts, depth,
+            fill: shadeColor(color, b), outline: shadeColor(color, b*0.6), width:1,
+          });
+        }
+      }
+    }
+  }
+  renderFood(faces, cam) {
+    const pulse = 0.85 + 0.15*Math.sin(this.time*6);
+    const size = CELL*0.6*pulse;
+    const pos = gridToWorld(...this.state.food);
+    const {v, faces: cubeFaces} = makeCubeFaces(pos, size);
+    const camVerts = v.map(p => cam.worldToCam(p));
+    const glow = 0.7 + 0.3*Math.sin(this.time*6);
+    for (const [indices, normal] of cubeFaces) {
+      const camPts = indices.map(idx => camVerts[idx]);
+      const depth = camPts.reduce((s,p) => s+p[2], 0) / camPts.length;
+      const nCam = cam.dirToCam(normal);
+      if (nCam[2] < 0) {
+        const b = Math.max(0.5, Math.abs(nCam[2])*glow+0.5);
+        faces.push({
+          type:'poly', camPts, depth,
+          fill: shadeColor(FOOD_COLOR, b), outline: shadeColor(FOOD_COLOR, b*1.2), width:1,
+        });
+      }
+    }
+  }
+  renderParticles(faces, cam) {
+    for (const p of this.particles.particles) {
+      const alpha = p.life / p.maxLife;
+      const size = 0.15 * (0.5 + alpha*0.5);
+      const pc = cam.worldToCam(p.pos);
+      if (pc[2] < CLIP_NEAR) continue;
+      const r = Math.max(1, size * FOV / pc[2] * 0.5);
+      faces.push({
+        type:'poly',
+        camPts: this.makeQuadCam(pc, r),
+        depth: pc[2],
+        fill: shadeColor(p.color, alpha), outline:'', width:0,
+      });
+    }
+  }
+  makeQuadCam(center, hs) {
+    const [cx,cy,cz] = center;
+    return [[cx-hs,cy-hs,cz],[cx+hs,cy-hs,cz],[cx+hs,cy+hs,cz],[cx-hs,cy+hs,cz]];
+  }
+  renderUI() {
+    document.getElementById('scoreEl').textContent = 'SCORE ' + this.state.score;
+    document.getElementById('bestEl').textContent = 'BEST ' + this.state.best;
+    document.getElementById('lenEl').textContent = 'LEN ' + this.state.snake.length;
+    const modeEl = document.getElementById('modeEl');
+    const isWrap = this.state.wallMode === WALL_WRAP;
+    modeEl.textContent = 'MODE ' + (isWrap ? 'WRAP' : 'SOLID');
+    modeEl.className = 'sub ' + (isWrap ? 'mode-wrap' : 'mode-solid');
+    const ov = document.getElementById('overlay');
+    if (this.flash > 0) {
+      this.ctx.fillStyle = lerpColor(BG_COLOR, ACCENT, this.flash*0.15);
+      this.ctx.fillRect(0, 0, this.W, this.H);
+    }
+    if (this.state.paused && this.state.alive) {
+      ov.style.display = 'flex';
+      document.getElementById('overlayTitle').textContent = 'PAUSED';
+      document.getElementById('overlayTitle').style.color = '#e0f7fa';
+      document.getElementById('overlaySub').textContent = '';
+      document.getElementById('overlayHint').textContent = 'Press P to resume';
+    } else if (!this.state.alive) {
+      ov.style.display = 'flex';
+      if (this.state.won) {
+        document.getElementById('overlayTitle').textContent = 'YOU WIN!';
+        document.getElementById('overlayTitle').style.color = ACCENT;
+        document.getElementById('overlaySub').textContent = 'Final Score: ' + this.state.score;
+      } else {
+        document.getElementById('overlayTitle').textContent = 'GAME OVER';
+        document.getElementById('overlayTitle').style.color = FOOD_COLOR;
+        document.getElementById('overlaySub').textContent = 'Score: ' + this.state.score;
+      }
+      document.getElementById('overlayHint').textContent = 'Press ENTER to restart';
+    } else {
+      ov.style.display = 'none';
+    }
+    // 小屏隐藏操作提示
+    document.getElementById('hintEl').style.display = this.W < 600 ? 'none' : 'block';
+    document.getElementById('controls').style.display = this.W < 600 ? 'flex' : 'none';
+  }
+}
+
+// 启动
+const game = new Snake3DGame();
+</script>
+</body>
+</html>

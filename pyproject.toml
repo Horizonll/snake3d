@@ -1,0 +1,17 @@
+[project]
+name = "snake3d"
+version = "0.1.0"
+description = "3D Snake game built with pure Python standard library (tkinter software renderer)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+snake3d = "main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["snake"]

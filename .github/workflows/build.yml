@@ -1,0 +1,172 @@
+name: CI / Deploy / Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "ci-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  # -------------------- CI 测试 --------------------
+  test:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Set up Python
+        run: uv python install 3.12 && uv python pin 3.12
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run game logic tests
+        run: |
+          uv run python -c "
+          from snake.game import GameState
+          import collections
+
+          passed = 0; failed = 0
+          def check(name, cond):
+              global passed, failed
+              if cond: passed += 1
+              else: failed += 1; print(f'FAIL: {name}')
+
+          gs = GameState(); gs.reset()
+          check('init len=3', len(gs.snake) == 3)
+          gs.step()
+          check('move +X', list(gs.head) == [6,5,0])
+          gs.set_direction('NX'); gs.step()
+          check('reverse blocked', list(gs.head) == [7,5,0])
+
+          gs.reset(); gs.wall_mode = 'wrap'
+          gs.snake = collections.deque([(9,5,0),(8,5,0),(7,5,0)])
+          gs.direction='PX'; gs.pending_dir='PX'; gs.step()
+          check('wrap +X', list(gs.head) == [0,5,0])
+
+          gs.reset(); gs.wall_mode = 'solid'
+          gs.snake = collections.deque([(9,5,0),(8,5,0),(7,5,0)])
+          gs.direction='PX'; gs.pending_dir='PX'; gs.step()
+          check('solid kill', not gs.alive)
+
+          gs.reset()
+          gs.snake = collections.deque([(5,5,0),(4,5,0),(3,5,0)])
+          gs.food = (6,5,0); gs.direction='PX'; gs.pending_dir='PX'
+          gs.step()
+          check('grow 1 per food', len(gs.snake) == 4)
+
+          print(f'Tests: {passed} passed, {failed} failed')
+          assert failed == 0, f'{failed} tests failed'
+          "
+
+  # -------------------- 部署 GitHub Pages --------------------
+  deploy-pages:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
+
+  # -------------------- 构建 Windows exe --------------------
+  build-windows:
+    needs: test
+    runs-on: windows-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Set up Python
+        run: uv python install 3.12 && uv python pin 3.12
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Install PyInstaller
+        run: uv pip install pyinstaller
+
+      - name: Build executable
+        run: uv run pyinstaller main.py --onefile --name snake3d --windowed --collect-all snake
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: snake3d-windows
+          path: dist/snake3d.exe
+
+  # -------------------- 发布 Release --------------------
+  release:
+    needs: build-windows
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: snake3d-windows
+          path: dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/snake3d.exe
+          name: ${{ github.ref_name }}
+          body: |
+            ## 3D Snake ${{ github.ref_name }}
+
+            ### Online Play
+            直接在浏览器玩: [GitHub Pages](https://${{ github.repository_owner }}.github.io/snake3d/)
+
+            ### Download
+            - **Windows**: `snake3d.exe` — 下载后双击运行，无需安装 Python
+
+            ### Features
+            - 3D 贪吃蛇游戏（纯标准库渲染）
+            - 穿墙 / 撞墙双模式（T 键切换）
+            - 摄像机自动旋转 + 手动控制
+            - 粒子特效 + 屏幕震动
+            - Web 版支持触屏控制
+
+            ### Controls
+            | Key | Action |
+            |-----|--------|
+            | WASD | Move (relative to camera) |
+            | Space/Shift | Up/Down |
+            | Arrows | Rotate camera |
+            | R | Reset camera |
+            | P | Pause |
+            | T | Toggle wall mode |
+            | Enter | Restart |
+          draft: false
+          prerelease: false
