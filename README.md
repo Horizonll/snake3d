@@ -6,7 +6,7 @@
 
 push 到 main 自动部署 GitHub Pages：
 
-> https://&lt;你的用户名&gt;.github.io/snake3d/
+> https://horizonll.github.io/snake3d/
 
 ## 本地运行
 
