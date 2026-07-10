@@ -41,3 +41,8 @@ WRAP_BORDER_COLOR = "#76ff03"  # 穿墙模式边框色
 # 墙壁模式
 WALL_SOLID = "solid"  # 撞墙死
 WALL_WRAP = "wrap"    # 穿墙从对面出来
+
+# 视角模式
+VIEW_FREE = 0     # 自由环绕原点
+VIEW_FOLLOW = 1   # 第三人称跟随蛇头
+VIEW_FPS = 2      # 第一人称（蛇头视角）

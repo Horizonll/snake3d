@@ -17,7 +17,7 @@ from .constants import (
     GRID, CELL, ORIGIN_OFFSET, DIRS, OPPOSITE, FOV, CLIP_NEAR,
     SNAKE_HEAD_COLOR, SNAKE_TAIL_COLOR, FOOD_COLOR, GRID_COLOR,
     BORDER_COLOR, BG_COLOR, TEXT_COLOR, ACCENT_COLOR, WRAP_BORDER_COLOR,
-    WALL_SOLID, WALL_WRAP,
+    WALL_SOLID, WALL_WRAP, VIEW_FREE, VIEW_FOLLOW, VIEW_FPS,
 )
 
 
@@ -196,19 +196,35 @@ class Snake3DGame:
         self.keys_held.add(key)
 
         if key == "left":
-            self.camera.yaw -= 0.12
-            self.camera.auto_rotate = False
+            if self.camera.view_mode == VIEW_FPS:
+                self.camera.fps_yaw -= 0.12
+            else:
+                self.camera.yaw -= 0.12
+                self.camera.auto_rotate = False
         elif key == "right":
-            self.camera.yaw += 0.12
-            self.camera.auto_rotate = False
+            if self.camera.view_mode == VIEW_FPS:
+                self.camera.fps_yaw += 0.12
+            else:
+                self.camera.yaw += 0.12
+                self.camera.auto_rotate = False
         elif key == "up":
-            self.camera.pitch = max(-0.3, self.camera.pitch - 0.10)
+            if self.camera.view_mode == VIEW_FPS:
+                self.camera.fps_pitch = max(-0.6, self.camera.fps_pitch - 0.10)
+            else:
+                self.camera.pitch = max(-0.3, self.camera.pitch - 0.10)
         elif key == "down":
-            self.camera.pitch = min(1.0, self.camera.pitch + 0.10)
+            if self.camera.view_mode == VIEW_FPS:
+                self.camera.fps_pitch = min(0.6, self.camera.fps_pitch + 0.10)
+            else:
+                self.camera.pitch = min(1.0, self.camera.pitch + 0.10)
         elif key == "r":
             self.camera = Camera()
         elif key == "f":
-            self.camera.follow = not self.camera.follow
+            # 循环切换视角：FREE → FOLLOW → FPS → FREE
+            modes = [VIEW_FREE, VIEW_FOLLOW, VIEW_FPS]
+            idx = modes.index(self.camera.view_mode)
+            self.camera.view_mode = modes[(idx + 1) % 3]
+            self.camera.auto_rotate = self.camera.view_mode == VIEW_FREE
         elif key == "p":
             self.state.paused = not self.state.paused
         elif key == "t":
@@ -314,6 +330,9 @@ class Snake3DGame:
         # 设置相机目标为蛇头渲染位置（含插值），再更新相机
         head_world = self._get_snake_render_positions()[0] if self.state.snake else (0, 0, 0)
         self.camera.set_target(head_world)
+        # 传递蛇头移动方向（FPS 模式朝向）
+        head_dir = DIRS.get(self.state.direction, (1, 0, 0))
+        self.camera.set_head_dir(head_dir)
         self.camera.update(dt)
         self.camera.begin_frame()
 
@@ -555,11 +574,18 @@ class Snake3DGame:
         mode_text = "WRAP" if self.state.wall_mode == WALL_WRAP else "SOLID"
         mode_color = WRAP_BORDER_COLOR if self.state.wall_mode == WALL_WRAP else BORDER_COLOR
         c.create_text(20, 92, anchor="nw",
-                      text=f"MODE   {mode_text}",
+                      text=f"WALL   {mode_text}",
                       fill=mode_color, font=("Consolas", 14), tags="frame")
 
+        # 视角指示
+        view_names = {VIEW_FREE: "FREE", VIEW_FOLLOW: "FOLLOW", VIEW_FPS: "FPS"}
+        view_text = view_names.get(self.camera.view_mode, "?")
+        c.create_text(20, 114, anchor="nw",
+                      text=f"VIEW   {view_text}",
+                      fill=ACCENT_COLOR, font=("Consolas", 14), tags="frame")
+
         # 操作提示
-        hint = "WASD move | Arrows cam | R reset | F follow | P pause | T wall | Enter restart"
+        hint = "WASD move | Arrows cam | R reset | F view | P pause | T wall | Enter restart"
         c.create_text(self.W - 20, 20, anchor="ne", text=hint,
                       fill="#546e7a", font=("Consolas", 11), tags="frame")
 

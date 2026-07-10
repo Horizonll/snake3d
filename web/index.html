@@ -33,10 +33,11 @@ canvas { display: block; touch-action: none; }
     <div class="score" id="scoreEl">SCORE 0</div>
     <div class="sub" id="bestEl">BEST 0</div>
     <div class="sub" id="lenEl">LEN 3</div>
-    <div class="sub" id="modeEl">MODE WRAP</div>
+    <div class="sub" id="modeEl">WALL WRAP</div>
+    <div class="sub" id="viewEl" style="color:#76ff03">VIEW FREE</div>
   </div>
   <div class="hud-tr" id="hintEl">
-    WASD move | Space/Shift up/down<br>Arrows rotate cam | R reset | F follow | P pause | T wall | Enter restart
+    WASD move | Space/Shift up/down<br>Arrows cam | R reset | F view | P pause | T wall | Enter restart
   </div>
 </div>
 <div id="overlay" style="display:none">
@@ -98,6 +99,7 @@ const FOV = 800, CLIP_NEAR = 0.5;
 const DIRS = { PX:[1,0,0], NX:[-1,0,0], PY:[0,1,0], NY:[0,-1,0], PZ:[0,0,1], NZ:[0,0,-1] };
 const OPP = { PX:'NX', NX:'PX', PY:'NY', NY:'PY', PZ:'NZ', NZ:'PZ' };
 const WALL_WRAP = 'wrap', WALL_SOLID = 'solid';
+const VIEW_FREE = 0, VIEW_FOLLOW = 1, VIEW_FPS = 2;
 const SNAKE_HEAD = '#00e5ff', SNAKE_TAIL = '#1a237e';
 const FOOD_COLOR = '#ff1744', GRID_COLOR = '#1a3a5a';
 const BORDER_COLOR = '#4fc3f7', WRAP_BORDER = '#76ff03';
@@ -184,13 +186,18 @@ class Camera {
   constructor() {
     this.yaw = -0.6; this.pitch = 0.35; this.distance = 28; this.height = 4;
     this.autoRotate = true; this.autoSpeed = 0.15;
-    this.follow = false;
+    this.viewMode = VIEW_FREE;
     this._target = [0,0,0];
     this._targetSmooth = [0,0,0];
+    this._headDir = [1,0,0];
+    this._headDirSmooth = [1,0,0];
+    this.fpsYaw = 0; this.fpsPitch = 0;
     this.beginFrame();
   }
   setTarget(pos) { this._target = pos; }
+  setHeadDir(d) { this._headDir = d; }
   basis() {
+    if (this.viewMode === VIEW_FPS) return this._basisFps();
     const cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
     const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw);
     const [tx,ty,tz] = this._targetSmooth;
@@ -198,6 +205,20 @@ class Camera {
     const fwd = V.norm(V.sub(this._targetSmooth, pos));
     const wup = [0,1,0];
     const right = V.norm(V.cross(fwd, wup));
+    const up = V.cross(right, fwd);
+    return {right, up, fwd, pos};
+  }
+  _basisFps() {
+    const [tx,ty,tz] = this._targetSmooth;
+    const pos = [tx, ty + 0.35, tz];
+    const base = V.norm(this._headDirSmooth);
+    const cy = Math.cos(this.fpsYaw), sy = Math.sin(this.fpsYaw);
+    let fwd = [base[0]*cy + base[2]*sy, base[1], -base[0]*sy + base[2]*cy];
+    const wup = [0,1,0];
+    const right = V.norm(V.cross(fwd, wup));
+    const cp = Math.cos(this.fpsPitch), sp = Math.sin(this.fpsPitch);
+    fwd = [fwd[0]*cp + right[0]*sp, fwd[1]*cp + right[1]*sp, fwd[2]*cp + right[2]*sp];
+    fwd = V.norm(fwd);
     const up = V.cross(right, fwd);
     return {right, up, fwd, pos};
   }
@@ -217,10 +238,10 @@ class Camera {
     return [pc[0]*s+cx, -pc[1]*s+cy, z];
   }
   update(dt) {
-    if (this.autoRotate) this.yaw += this.autoSpeed * dt;
-    if (this.follow) {
-      this._targetSmooth = V.lerp(this._targetSmooth, this._target, Math.min(1, dt*5));
-    }
+    if (this.viewMode === VIEW_FREE && this.autoRotate) this.yaw += this.autoSpeed * dt;
+    const t = Math.min(1, dt*8);
+    this._targetSmooth = V.lerp(this._targetSmooth, this._target, t);
+    this._headDirSmooth = V.norm(V.lerp(this._headDirSmooth, this._headDir, t));
   }
 }
 
@@ -319,12 +340,30 @@ class Snake3DGame {
     if (down) this.keysHeld.add(k); else this.keysHeld.delete(k);
     if (!down) return;
     switch(k) {
-      case 'arrowleft': this.camera.yaw -= 0.12; this.camera.autoRotate = false; break;
-      case 'arrowright': this.camera.yaw += 0.12; this.camera.autoRotate = false; break;
-      case 'arrowup': this.camera.pitch = Math.max(-0.3, this.camera.pitch - 0.10); break;
-      case 'arrowdown': this.camera.pitch = Math.min(1.0, this.camera.pitch + 0.10); break;
-      case 'r': { const m=this.camera.autoRotate; this.camera = new Camera(); this.camera.autoRotate = m; break; }
-      case 'f': this.camera.follow = !this.camera.follow; break;
+      case 'arrowleft':
+        if (this.camera.viewMode === VIEW_FPS) this.camera.fpsYaw -= 0.12;
+        else { this.camera.yaw -= 0.12; this.camera.autoRotate = false; }
+        break;
+      case 'arrowright':
+        if (this.camera.viewMode === VIEW_FPS) this.camera.fpsYaw += 0.12;
+        else { this.camera.yaw += 0.12; this.camera.autoRotate = false; }
+        break;
+      case 'arrowup':
+        if (this.camera.viewMode === VIEW_FPS) this.camera.fpsPitch = Math.max(-0.6, this.camera.fpsPitch - 0.10);
+        else this.camera.pitch = Math.max(-0.3, this.camera.pitch - 0.10);
+        break;
+      case 'arrowdown':
+        if (this.camera.viewMode === VIEW_FPS) this.camera.fpsPitch = Math.min(0.6, this.camera.fpsPitch + 0.10);
+        else this.camera.pitch = Math.min(1.0, this.camera.pitch + 0.10);
+        break;
+      case 'r': { const m=this.camera.autoRotate; const v=this.camera.viewMode; this.camera = new Camera(); this.camera.autoRotate = m; this.camera.viewMode = v; break; }
+      case 'f': {
+        const modes = [VIEW_FREE, VIEW_FOLLOW, VIEW_FPS];
+        const idx = modes.indexOf(this.camera.viewMode);
+        this.camera.viewMode = modes[(idx+1) % 3];
+        this.camera.autoRotate = this.camera.viewMode === VIEW_FREE;
+        break;
+      }
       case 'p': this.state.paused = !this.state.paused; break;
       case 't': this.state.wallMode = this.state.wallMode === WALL_WRAP ? WALL_SOLID : WALL_WRAP; break;
       case 'enter':
@@ -395,6 +434,7 @@ class Snake3DGame {
     // 设置相机目标为蛇头渲染位置，再更新相机
     const headWorld = this.state.snake.length > 0 ? this.getSnakePositions()[0] : [0,0,0];
     this.camera.setTarget(headWorld);
+    this.camera.setHeadDir(DIRS[this.state.direction] || [1,0,0]);
     this.camera.update(dt);
     this.camera.beginFrame();
     this.particles.update(dt);
@@ -540,8 +580,11 @@ class Snake3DGame {
     document.getElementById('lenEl').textContent = 'LEN ' + this.state.snake.length;
     const modeEl = document.getElementById('modeEl');
     const isWrap = this.state.wallMode === WALL_WRAP;
-    modeEl.textContent = 'MODE ' + (isWrap ? 'WRAP' : 'SOLID');
+    modeEl.textContent = 'WALL ' + (isWrap ? 'WRAP' : 'SOLID');
     modeEl.className = 'sub ' + (isWrap ? 'mode-wrap' : 'mode-solid');
+    const viewEl = document.getElementById('viewEl');
+    const viewNames = ['FREE','FOLLOW','FPS'];
+    viewEl.textContent = 'VIEW ' + viewNames[this.camera.viewMode];
     const ov = document.getElementById('overlay');
     if (this.flash > 0) {
       this.ctx.fillStyle = lerpColor(BG_COLOR, ACCENT, this.flash*0.15);
