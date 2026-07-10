@@ -36,7 +36,7 @@ canvas { display: block; touch-action: none; }
     <div class="sub" id="modeEl">MODE WRAP</div>
   </div>
   <div class="hud-tr" id="hintEl">
-    WASD move | Space/Shift up/down<br>Arrows rotate cam | R reset | P pause | T wall | Enter restart
+    WASD move | Space/Shift up/down<br>Arrows rotate cam | R reset | F follow | P pause | T wall | Enter restart
   </div>
 </div>
 <div id="overlay" style="display:none">
@@ -184,13 +184,18 @@ class Camera {
   constructor() {
     this.yaw = -0.6; this.pitch = 0.35; this.distance = 28; this.height = 4;
     this.autoRotate = true; this.autoSpeed = 0.15;
+    this.follow = false;
+    this._target = [0,0,0];
+    this._targetSmooth = [0,0,0];
     this.beginFrame();
   }
+  setTarget(pos) { this._target = pos; }
   basis() {
     const cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
     const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw);
-    const pos = [this.distance*sy*cp, this.distance*sp+this.height, this.distance*cy*cp];
-    const fwd = V.norm([-pos[0],-pos[1],-pos[2]]);
+    const [tx,ty,tz] = this._targetSmooth;
+    const pos = [this.distance*sy*cp+tx, this.distance*sp+this.height+ty, this.distance*cy*cp+tz];
+    const fwd = V.norm(V.sub(this._targetSmooth, pos));
     const wup = [0,1,0];
     const right = V.norm(V.cross(fwd, wup));
     const up = V.cross(right, fwd);
@@ -211,7 +216,12 @@ class Camera {
     const s = FOV / z;
     return [pc[0]*s+cx, -pc[1]*s+cy, z];
   }
-  update(dt) { if (this.autoRotate) this.yaw += this.autoSpeed * dt; }
+  update(dt) {
+    if (this.autoRotate) this.yaw += this.autoSpeed * dt;
+    if (this.follow) {
+      this._targetSmooth = V.lerp(this._targetSmooth, this._target, Math.min(1, dt*5));
+    }
+  }
 }
 
 // ============================================================
@@ -314,6 +324,7 @@ class Snake3DGame {
       case 'arrowup': this.camera.pitch = Math.max(-0.3, this.camera.pitch - 0.10); break;
       case 'arrowdown': this.camera.pitch = Math.min(1.0, this.camera.pitch + 0.10); break;
       case 'r': { const m=this.camera.autoRotate; this.camera = new Camera(); this.camera.autoRotate = m; break; }
+      case 'f': this.camera.follow = !this.camera.follow; break;
       case 'p': this.state.paused = !this.state.paused; break;
       case 't': this.state.wallMode = this.state.wallMode === WALL_WRAP ? WALL_SOLID : WALL_WRAP; break;
       case 'enter':
@@ -367,8 +378,6 @@ class Snake3DGame {
   }
   update(dt) {
     this.time += dt;
-    this.camera.update(dt);
-    this.camera.beginFrame();
     this.updateMoveKeys();
     const preSnake = this.state.snake.map(s => [...s]);
     const onEat = () => {
@@ -383,6 +392,11 @@ class Snake3DGame {
       this.prevSnake = preSnake;
       this.moveProgress = 0;
     }
+    // 设置相机目标为蛇头渲染位置，再更新相机
+    const headWorld = this.state.snake.length > 0 ? this.getSnakePositions()[0] : [0,0,0];
+    this.camera.setTarget(headWorld);
+    this.camera.update(dt);
+    this.camera.beginFrame();
     this.particles.update(dt);
     if (this.shake > 0) this.shake = Math.max(0, this.shake - dt*4);
     if (this.flash > 0) this.flash = Math.max(0, this.flash - dt*3);

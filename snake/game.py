@@ -207,6 +207,8 @@ class Snake3DGame:
             self.camera.pitch = min(1.0, self.camera.pitch + 0.10)
         elif key == "r":
             self.camera = Camera()
+        elif key == "f":
+            self.camera.follow = not self.camera.follow
         elif key == "p":
             self.state.paused = not self.state.paused
         elif key == "t":
@@ -289,8 +291,6 @@ class Snake3DGame:
 
     def update(self, dt):
         self.time += dt
-        self.camera.update(dt)
-        self.camera.begin_frame()
         self._update_move_keys()
 
         pre_snake = list(self.state.snake)
@@ -310,6 +310,12 @@ class Snake3DGame:
         if self.state.snake and (not pre_snake or self.state.snake[0] != pre_snake[0]):
             self.prev_snake = pre_snake
             self.move_progress = 0.0
+
+        # 设置相机目标为蛇头渲染位置（含插值），再更新相机
+        head_world = self._get_snake_render_positions()[0] if self.state.snake else (0, 0, 0)
+        self.camera.set_target(head_world)
+        self.camera.update(dt)
+        self.camera.begin_frame()
 
         self.particles.update(dt)
         if self.shake > 0:
@@ -553,7 +559,7 @@ class Snake3DGame:
                       fill=mode_color, font=("Consolas", 14), tags="frame")
 
         # 操作提示
-        hint = "WASD move | Space/Shift up/down | Arrows cam | R reset | P pause | T wall mode"
+        hint = "WASD move | Arrows cam | R reset | F follow | P pause | T wall | Enter restart"
         c.create_text(self.W - 20, 20, anchor="ne", text=hint,
                       fill="#546e7a", font=("Consolas", 11), tags="frame")
 
